@@ -1,3 +1,7 @@
+# Shader validator fork
+
+This fork of https://github.com/antaalt/shader-validator automatically resolves #includes directives in GLSL shaders and predefines shader stage #defines. So you can use it, even if your engine automatically resolves #includes.
+
 # Shader validator
 
 [![Rust](https://img.shields.io/badge/Rust-%23000000.svg?e&logo=rust&logoColor=white)](https://www.rust-lang.org/)
