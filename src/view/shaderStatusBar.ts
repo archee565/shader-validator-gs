@@ -42,7 +42,7 @@ export class ShaderStatusBar {
                     this.statusBar.text = "$(stop-circle) shader-validator";
                     this.statusBar.command = "shader-validator.stopServer";
                 } else {
-                    this.statusBar.text = "shader-validator";
+                    this.statusBar.text = "shader-validator-gs";
                     this.statusBar.command = undefined;
                 }
                 statusString = `Server running.`;

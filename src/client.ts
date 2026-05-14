@@ -16,6 +16,8 @@ import {
     ConfigurationParams,
     ConfigurationRequest,
     DidChangeConfigurationNotification,
+    DidChangeTextDocumentNotification,
+    DidOpenTextDocumentNotification,
     ErrorAction,
     ErrorHandler,
     ErrorHandlerResult,
@@ -30,6 +32,7 @@ import {
     Trace,
     TransportKind
 } from 'vscode-languageclient/node';
+import { IncludeResolver, ShaderPreprocessor, PreprocessResult } from './include-preprocessor';
 import { sidebar } from "./extension";
 
 export enum ServerPlatform {
@@ -50,9 +53,16 @@ export function isRunningOnWeb() : boolean {
 }
 
 function getConfigurationAsString(): string {
-    let config = vscode.workspace.getConfiguration("shader-validator");
+    let config = vscode.workspace.getConfiguration("shader-validator-gs");
     const configObject : { [key: string]: any } = {};
+    const clientSideIncludes = config.get<boolean>("clientSideIncludes");
     for (const [key, value] of Object.entries(config)) {
+        // When client-side include processing is active, don't send include
+        // paths to the server — the server's own include resolution would
+        // insert #line directives that cause GL_GOOGLE errors.
+        if (clientSideIncludes && key === "includes") {
+            continue;
+        }
         configObject[key] = value;
     }
     return JSON.stringify(configObject);
@@ -113,7 +123,7 @@ export class ServerVersion {
             return null; // Bundled wasi version
         } else {
             // Check configuration.
-            let serverPath = vscode.workspace.getConfiguration("shader-validator").get<string>("serverPath");
+            let serverPath = vscode.workspace.getConfiguration("shader-validator-gs").get<string>("serverPath");
             if (serverPath && serverPath.length > 0) {
                 let serverVersion = ServerVersion.getServerVersion(serverPath, platform);
                 if (serverVersion) {
@@ -140,7 +150,7 @@ export class ServerVersion {
         }
     }
     static getBundledVersion() : string {
-        return "shader-language-server v" + vscode.extensions.getExtension('antaalt.shader-validator')!.packageJSON.server_version;
+        return "shader-language-server v" + vscode.extensions.getExtension('antaalt.shader-validator-gs')!.packageJSON.server_version;
     }
     private static getServerVersion(serverPath: string | null, platform: ServerPlatform) : string | null {
         if (isRunningOnWeb() || platform === ServerPlatform.wasi || serverPath === null) {
@@ -160,7 +170,7 @@ export class ServerVersion {
         }
     }
     private isValidVersion() {
-        const requestedServerVersion = vscode.extensions.getExtension('antaalt.shader-validator')!.packageJSON.server_version;
+        const requestedServerVersion = vscode.extensions.getExtension('antaalt.shader-validator-gs')!.packageJSON.server_version;
         const versionExpected = "shader-language-server v" + requestedServerVersion;
         return this.version === versionExpected;
     }
@@ -199,7 +209,7 @@ export class ServerVersion {
         return vscode.Uri.joinPath(ServerVersion.getPlatformBinaryDirectoryPath(extensionUri, serverPath, platform), ServerVersion.getPlatformBinaryName(serverPath, platform));
     }
     static getServerPlatform() : ServerPlatform {
-        let useWasiServer = vscode.workspace.getConfiguration("shader-validator").get<boolean>("useWasiServer")!;
+        let useWasiServer = vscode.workspace.getConfiguration("shader-validator-gs").get<boolean>("useWasiServer")!;
         if (isRunningOnWeb() || useWasiServer) {
             return ServerPlatform.wasi;
         } else {
@@ -216,35 +226,6 @@ export class ServerVersion {
     }
 };
 
-function getMiddleware() : Middleware {
-    return {
-        async provideDocumentSymbols(document: vscode.TextDocument, token: vscode.CancellationToken, next: ProvideDocumentSymbolsSignature) {
-            const result = await next(document, token);
-            if (result) {
-                // /!\ Type casting need to match server data sent. /!\ 
-                let resultArray = result as vscode.DocumentSymbol[];
-                sidebar.onDocumentSymbols(document.uri, resultArray);
-            }
-            return result;
-        },
-        workspace: {
-            async configuration(params: ConfigurationParams, token: vscode.CancellationToken, next : ConfigurationRequest.HandlerSignature) {
-                // Here we resolve vscode variables ourselves as there is no API for this.
-                // see https://github.com/microsoft/vscode/issues/140056
-                // Only solve them for includes as we are dealing with path.
-                let result = await next(params, token);
-                console.debug("initial configuration", result);
-                let resultArray = result as any[];
-                let config = resultArray[0];
-                config["includes"] = config["includes"].map((include: string) => {
-                    return resolveVSCodeVariables(include);
-                });
-                console.debug("resolved configuration", config);
-                return [config];
-            }
-        }
-    };
-}
 
 class ShaderErrorHandler implements ErrorHandler {
     private server: ShaderLanguageClient;
@@ -268,11 +249,30 @@ export class ShaderLanguageClient {
     private serverVersion: ServerVersion;
     private serverStatus: ServerStatus = ServerStatus.stopped;
     private statusChangedCallback: (status: ServerStatus) => void;
+    private includeResolver: IncludeResolver;
+    private preprocessor: ShaderPreprocessor;
+    private preprocessResults: Map<string, PreprocessResult> = new Map();
+    private preprocessTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+    private includeDiagCollection: vscode.DiagnosticCollection | null = null;
+    private clientRef: { current: LanguageClient | null } = { current: null };
 
     constructor(context: vscode.ExtensionContext) {
         this.statusChangedCallback = (status) => {};
         this.serverVersion = new ServerVersion(context.extensionUri);
         this.errorHandler = new ShaderErrorHandler(this);
+        this.includeResolver = new IncludeResolver();
+        this.preprocessor = new ShaderPreprocessor(this.includeResolver);
+        this.includeDiagCollection = vscode.languages.createDiagnosticCollection('shader-validator-includes');
+        this.initIncludeDirs();
+    }
+
+    private initIncludeDirs(): void {
+        const dirs = vscode.workspace.getConfiguration("shader-validator-gs")
+            .get<string[]>("includes", [])
+            .map(d => resolveVSCodeVariables(d));
+        this.includeResolver.updateIncludeDirs(dirs);
+        // Debug marker to verify new code is loaded
+        try { fs.writeFileSync('/tmp/shader-validator-debug.txt', 'loaded\n'); } catch {}
     }
 
     onStatusChanged(statusChangedCallback: (status: ServerStatus) => void) {
@@ -283,7 +283,7 @@ export class ShaderLanguageClient {
         if (this.serverStatus === ServerStatus.running) {
             return ServerStatus.running;
         }
-        let levelString = vscode.workspace.getConfiguration("shader-validator").get<string>("trace.server")!;
+        let levelString = vscode.workspace.getConfiguration("shader-validator-gs").get<string>("trace.server")!;
         let level = Trace.fromString(levelString);
         switch (level) {
             case Trace.Verbose:
@@ -311,6 +311,11 @@ export class ShaderLanguageClient {
         await this.start(context, true);
     }
     async stop() {
+        for (const timer of this.preprocessTimers.values()) {
+            clearTimeout(timer);
+        }
+        this.preprocessTimers.clear();
+        this.preprocessResults.clear();
         await this.client?.stop(100).catch(_ => {});
         this.dispose();
         this.serverStatus = ServerStatus.stopped;
@@ -321,6 +326,9 @@ export class ShaderLanguageClient {
     updateStatus(status: ServerStatus) {
         this.serverStatus = status;
         this.statusChangedCallback(status);
+    }
+    invalidateIncludeCache(uri: vscode.Uri): void {
+        this.preprocessor.invalidateForFile(uri);
     }
     getServerStatus(): ServerStatus {
         return this.serverStatus;
@@ -339,6 +347,7 @@ export class ShaderLanguageClient {
     dispose() {
         this.client?.dispose(100).catch(_ => {});
         this.channel?.dispose();
+        this.includeDiagCollection?.dispose();
     }
     sendNotification<P, RO>(type: ProtocolNotificationType<P, RO>, params?: P): Promise<void> {
         return this.client!.sendNotification(type, params);
@@ -361,9 +370,9 @@ export class ShaderLanguageClient {
         return ["hlsl", "glsl", "wgsl"];
     }
     static isEnabledLangId(langId: string) {
-        let hlslSupported = vscode.workspace.getConfiguration("shader-validator").get<boolean>("hlsl.enabled")!;
-        let glslSupported = vscode.workspace.getConfiguration("shader-validator").get<boolean>("glsl.enabled")!;
-        let wgslSupported = vscode.workspace.getConfiguration("shader-validator").get<boolean>("wgsl.enabled")!;
+        let hlslSupported = vscode.workspace.getConfiguration("shader-validator-gs").get<boolean>("hlsl.enabled")!;
+        let glslSupported = vscode.workspace.getConfiguration("shader-validator-gs").get<boolean>("glsl.enabled")!;
+        let wgslSupported = vscode.workspace.getConfiguration("shader-validator-gs").get<boolean>("wgsl.enabled")!;
         switch(langId) {
             case "hlsl": return hlslSupported;
             case "glsl": return glslSupported;
@@ -372,7 +381,7 @@ export class ShaderLanguageClient {
         }
     }
     static getTraceLevel(): Trace {
-        let levelString = vscode.workspace.getConfiguration("shader-validator").get<string>("trace.server")!;
+        let levelString = vscode.workspace.getConfiguration("shader-validator-gs").get<string>("trace.server")!;
         return Trace.fromString(levelString);
     }
 
@@ -393,12 +402,85 @@ export class ShaderLanguageClient {
                 documentSelector.push({ scheme: 'file', language: langId });
             }
         }
+        const self = this;
+        const clientRef = this.clientRef;
+        const middleware: Middleware = {
+            async provideDocumentSymbols(document: vscode.TextDocument, token: vscode.CancellationToken, next: ProvideDocumentSymbolsSignature) {
+                const result = await next(document, token);
+                if (result) {
+                    // /!\ Type casting need to match server data sent. /!\
+                    let resultArray = result as vscode.DocumentSymbol[];
+                    sidebar.onDocumentSymbols(document.uri, resultArray);
+                }
+                return result;
+            },
+            workspace: {
+                async configuration(params: ConfigurationParams, token: vscode.CancellationToken, next : ConfigurationRequest.HandlerSignature) {
+                    // Here we resolve vscode variables ourselves as there is no API for this.
+                    // see https://github.com/microsoft/vscode/issues/140056
+                    // Only solve them for includes as we are dealing with path.
+                    let result = await next(params, token);
+                    console.debug("initial configuration", result);
+                    let resultArray = result as any[];
+                    let config = resultArray[0];
+                    config["includes"] = config["includes"].map((include: string) => {
+                        return resolveVSCodeVariables(include);
+                    });
+                    self.includeResolver.updateIncludeDirs(config["includes"]);
+                    self.preprocessor.clearCache();
+                    console.debug("resolved configuration", config);
+                    return [config];
+                }
+            },
+            async didOpen(document: vscode.TextDocument, next) {
+                const setting = vscode.workspace.getConfiguration("shader-validator-gs").get<boolean>("clientSideIncludes");
+                const enabled = self.shouldPreprocess(document);
+                try { fs.appendFileSync('/tmp/shader-validator-debug.txt', `didOpen: ${document.uri} lang=${document.languageId} scheme=${document.uri.scheme} setting=${setting} preprocess=${enabled}\n`); } catch {}
+                if (enabled) {
+                    await self.sendPreprocessedOpen(document);
+                    return;
+                }
+                await next(document);
+            },
+            async didChange(event: vscode.TextDocumentChangeEvent, next) {
+                if (self.shouldPreprocess(event.document)) {
+                    self.sendPreprocessedContentDebounced(event.document);
+                    return;
+                }
+                await next(event);
+            },
+            handleDiagnostics(uri: vscode.Uri, diagnostics: any[], next) {
+                const uriKey = uri.toString();
+                const preprocessResult = self.preprocessResults.get(uriKey);
+                if (!preprocessResult) {
+                    next(uri, diagnostics);
+                    return;
+                }
+                // Remap diagnostics and group by target URI
+                const remapped = new Map<string, any[]>();
+                for (const diag of diagnostics) {
+                    const entries = self.remapDiagnostic(diag, preprocessResult, uri);
+                    for (const [targetUri, targetDiag] of entries) {
+                        const key = targetUri.toString();
+                        if (!remapped.has(key)) {
+                            remapped.set(key, []);
+                        }
+                        remapped.get(key)!.push(targetDiag);
+                    }
+                }
+                // Clear diagnostics on the original URI, then publish remapped ones
+                next(uri, []);
+                for (const [targetUri, targetDiags] of remapped) {
+                    next(vscode.Uri.parse(targetUri), targetDiags);
+                }
+            },
+        };
         const clientOptions: LanguageClientOptions = {
             // Register the server for shader documents
             documentSelector: documentSelector,
             outputChannel: this.channel ? this.channel : undefined,
             traceOutputChannel: this.channel ? this.channel : undefined,
-            middleware: getMiddleware(),
+            middleware: middleware,
             uriConverters: this.serverVersion.platform === ServerPlatform.wasi ? createUriConverters() : undefined,
             errorHandler: this.errorHandler
         };
@@ -424,7 +506,7 @@ export class ShaderLanguageClient {
         return commonArgs;
     }
     private getServerEnv() {
-        const trace = vscode.workspace.getConfiguration("shader-validator").get<string>("trace.server");
+        const trace = vscode.workspace.getConfiguration("shader-validator-gs").get<string>("trace.server");
         const defaultEnv = {
             // https://github.com/rust-lang/rust/issues/117440
             //"RUST_MIN_STACK": "65535", // eslint-disable-line @typescript-eslint/naming-convention
@@ -457,8 +539,11 @@ export class ShaderLanguageClient {
             getChannelName(),
             serverOptions,
             clientOptions,
-            context.extensionMode === vscode.ExtensionMode.Development 
+            context.extensionMode === vscode.ExtensionMode.Development
         );
+
+        // Set clientRef before start so middleware can access the client
+        this.clientRef.current = client;
 
         // Start the client. This will also launch the server.
         return await client.start().then(_ => {
@@ -481,7 +566,7 @@ export class ShaderLanguageClient {
         // So we can use VS Code's file system API to load it. Makes it
         // independent of whether the code runs in the desktop or the web.
         const serverOptions: ServerOptions = async () => {
-            const trace = vscode.workspace.getConfiguration("shader-validator").get<string>("trace.server");
+            const trace = vscode.workspace.getConfiguration("shader-validator-gs").get<string>("trace.server");
             // Create virtual file systems to access workspaces from wasi app
             const mountPoints: MountPointDescriptor[] = [
                 { kind: 'workspaceFolder'}, // Workspaces
@@ -500,14 +585,14 @@ export class ShaderLanguageClient {
             };
             // Memory options required by wasm32-wasip1-threads target
             const memory : WebAssembly.MemoryDescriptor = {
-                initial: 160, 
+                initial: 160,
                 maximum: 1024, // Big enough to handle glslang heavy RAM usage.
                 shared: true
             };
 
             // Create a WASM process.
             const wasmProcess = await wasm.createProcess('shader-validator', module, memory, options);
-            
+
             // Hook stderr to the output channel if trace enabled.
             if (trace === "verbose" || trace === "messages") {
                 const decoder = new TextDecoder('utf-8');
@@ -533,9 +618,12 @@ export class ShaderLanguageClient {
             getChannelName(),
             serverOptions,
             clientOptions,
-            context.extensionMode === vscode.ExtensionMode.Development 
+            context.extensionMode === vscode.ExtensionMode.Development
         );
-        
+
+        // Set clientRef before start so middleware can access the client
+        this.clientRef.current = client;
+
         // Start the client. This will also launch the server
         return await client.start().then(_ => {
             if (client.isRunning()) {
@@ -548,6 +636,145 @@ export class ShaderLanguageClient {
             console.error("Failed to start server: " + e);
             return null;
         });
+    }
+
+    private async sendPreprocessedOpen(document: vscode.TextDocument): Promise<void> {
+        const client = this.clientRef.current;
+        if (!client) {
+            console.warn("[include-preprocess] clientRef.current is null, skipping");
+            return;
+        }
+        try {
+            const result = await this.preprocessor.preprocess(document);
+            this.preprocessResults.set(document.uri.toString(), result);
+
+            // Debug: write preprocessed content to temp file
+            const basename = path.basename(document.uri.fsPath);
+            const tmpPath = `/tmp/shader-preprocessed-${basename}`;
+            fs.writeFileSync(tmpPath, result.content);
+            console.info(`[include-preprocess] Wrote preprocessed content to ${tmpPath}`);
+
+            await client.sendNotification(DidOpenTextDocumentNotification.type, {
+                textDocument: {
+                    uri: client.code2ProtocolConverter.asUri(document.uri),
+                    languageId: document.languageId,
+                    version: document.version,
+                    text: result.content,
+                }
+            });
+
+            // Report include errors as VS Code diagnostics
+            const includeDiags = result.errors.map(error => new vscode.Diagnostic(
+                new vscode.Range(error.line, 0, error.line, 999),
+                error.message,
+                vscode.DiagnosticSeverity.Error,
+            ));
+            for (const diag of includeDiags) {
+                diag.source = 'shader-validator (includes)';
+            }
+            this.includeDiagCollection!.set(document.uri, includeDiags);
+        } catch (error) {
+            console.error(`Include preprocessing failed for ${document.uri}:`, error);
+        }
+    }
+
+    private shouldPreprocess(document: vscode.TextDocument): boolean {
+        return vscode.workspace.getConfiguration("shader-validator-gs")
+            .get<boolean>("clientSideIncludes") === true
+            && ShaderLanguageClient.isEnabledLangId(document.languageId)
+            && document.uri.scheme === 'file';
+    }
+
+    private async sendPreprocessedContent(document: vscode.TextDocument): Promise<void> {
+        const client = this.clientRef.current;
+        if (!client) {
+            return;
+        }
+        try {
+            const result = await this.preprocessor.preprocess(document);
+            this.preprocessResults.set(document.uri.toString(), result);
+
+            await client.sendNotification(
+                DidChangeTextDocumentNotification.type,
+                {
+                    textDocument: {
+                        uri: client.code2ProtocolConverter.asUri(document.uri),
+                        version: document.version,
+                    },
+                    contentChanges: [
+                        { text: result.content },
+                    ],
+                }
+            );
+
+            // Report include errors as VS Code diagnostics
+            const includeDiags = result.errors.map(error => new vscode.Diagnostic(
+                new vscode.Range(error.line, 0, error.line, 999),
+                error.message,
+                vscode.DiagnosticSeverity.Error,
+            ));
+            for (const diag of includeDiags) {
+                diag.source = 'shader-validator (includes)';
+            }
+            if (this.includeDiagCollection) {
+                this.includeDiagCollection.set(document.uri, includeDiags);
+            }
+        } catch (error) {
+            // Silently ignore disposed errors (e.g. during server restart)
+            if (!(error instanceof Error && error.message.includes('disposed'))) {
+                console.error(`Include preprocessing failed for ${document.uri}:`, error);
+            }
+        }
+    }
+
+    private sendPreprocessedContentDebounced(document: vscode.TextDocument): void {
+        const key = document.uri.toString();
+        const existing = this.preprocessTimers.get(key);
+        if (existing !== undefined) {
+            clearTimeout(existing);
+        }
+        const timer = setTimeout(async () => {
+            this.preprocessTimers.delete(key);
+            await this.sendPreprocessedContent(document);
+        }, 150);
+        this.preprocessTimers.set(key, timer);
+    }
+
+    private remapDiagnostic(
+        diag: any,
+        preprocessResult: PreprocessResult,
+        mainUri: vscode.Uri,
+    ): [vscode.Uri, any][] {
+        const startLine = diag.range.start.line;
+        const endLine = diag.range.end.line;
+
+        const startMapping = this.preprocessor.mapLineToSource(preprocessResult, startLine);
+        const endMapping = this.preprocessor.mapLineToSource(preprocessResult, endLine);
+
+        if (!startMapping) {
+            return [[mainUri, diag]];
+        }
+
+        const startUri = vscode.Uri.parse(startMapping.sourceUri);
+
+        if (endMapping && startMapping.sourceUri === endMapping.sourceUri) {
+            // Same source file — simple remap
+            const remapped = { ...diag };
+            remapped.range = {
+                start: { line: startMapping.sourceLine, character: diag.range.start.character },
+                end: { line: endMapping.sourceLine, character: diag.range.end.character },
+            };
+            return [[startUri, remapped]];
+        }
+
+        // Cross-boundary diagnostic — assign to start file
+        const remapped = { ...diag };
+        remapped.range = {
+            start: { line: startMapping.sourceLine, character: diag.range.start.character },
+            end: { line: startMapping.sourceLine, character: 999 },
+        };
+        remapped.message = diag.message + ' (diagnostic continues into included file)';
+        return [[startUri, remapped]];
     }
 
 }

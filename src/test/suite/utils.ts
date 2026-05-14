@@ -8,11 +8,11 @@ export function getRootFolder() : string {
 }
 
 export async function activate(docUri: vscode.Uri, waitServer: boolean) : Promise<[vscode.TextDocument, vscode.TextEditor] | null> {
-	const ext = vscode.extensions.getExtension('antaalt.shader-validator')!;
+	const ext = vscode.extensions.getExtension('antaalt.shader-validator-gs')!;
 
 	// Here set the settings to get the correct server to test.
 	const useWasiServer = process.env.USE_WASI_SERVER === "true";
-	await vscode.workspace.getConfiguration("shader-validator").update("useWasiServer", useWasiServer, vscode.ConfigurationTarget.Global);
+	await vscode.workspace.getConfiguration("shader-validator-gs").update("useWasiServer", useWasiServer, vscode.ConfigurationTarget.Global);
 	console.info(`Activating ${useWasiServer ? "wasi" : "native"} server for test`);
 
 	// Now activate extension with settings

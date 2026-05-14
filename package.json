@@ -1,8 +1,8 @@
 {
-  "name": "shader-validator",
-  "displayName": "Shader validator",
+  "name": "shader-validator-gs",
+  "displayName": "Shader validator GS",
   "description": "HLSL / GLSL / WGSL language server for vscode",
-  "icon": "res/logo-shader-validator.png",
+  "icon": "res/logo-shader-validator-gs.png",
   "galleryBanner": {
     "color": "#9ad0ff",
     "theme": "light"
@@ -28,7 +28,7 @@
     "wgsl"
   ],
   "activationEvents": [
-    "onCommand:shader-validator.validateFile",
+    "onCommand:shader-validator-gs.validateFile",
     "onLanguage:glsl",
     "onLanguage:wgsl",
     "onLanguage:hlsl"
@@ -62,6 +62,7 @@
           ".mesh",
           ".task",
           ".comp",
+          ".compp",
           ".geom",
           ".tesc",
           ".tese"
@@ -105,37 +106,37 @@
       {
         "title": "Common",
         "properties": {
-          "shader-validator.validate": {
+          "shader-validator-gs.validate": {
             "description": "Validate shader as you type with common validator API.",
             "type": "boolean",
             "default": true
           },
-          "shader-validator.symbols": {
+          "shader-validator-gs.symbols": {
             "description": "Provide symbol inspection with providers (goto, hover, completion...)",
             "type": "boolean",
             "default": true
           },
-          "shader-validator.symbolDiagnostics": {
+          "shader-validator-gs.symbolDiagnostics": {
             "description": "Provide diagnostics when symbol provider has issues.",
             "type": "boolean",
             "default": false
           },
-          "shader-validator.updateSymbolsOnVariantUpdate": {
+          "shader-validator-gs.updateSymbolsOnVariantUpdate": {
             "description": "Automatically update the symbols on variant update. Will trigger a save on the file.",
             "type": "boolean",
             "default": true
           },
-          "shader-validator.experimentalMacroExpansion": {
+          "shader-validator-gs.experimentalMacroExpansion": {
             "description": "Expand macro to be part of the document symbols. Experimental feature, might be unstable.",
             "type": "boolean",
             "default": false
           },
-          "shader-validator.dependencyContextDiagnostics": {
+          "shader-validator-gs.dependencyContextDiagnostics": {
             "description": "Look for a main file if we are on an include file to automatically resolve its context.",
             "type": "boolean",
             "default": false
           },
-          "shader-validator.severity": {
+          "shader-validator-gs.severity": {
             "type": "string",
             "description": "Minimum linting severity. Set it lower to display some hints aswell. Might not be supported by all languages.",
             "default": "info",
@@ -147,7 +148,7 @@
               "hint"
             ]
           },
-          "shader-validator.includes": {
+          "shader-validator-gs.includes": {
             "description": "Include paths to look up for includes.",
             "type": "array",
             "items": {
@@ -155,129 +156,134 @@
             },
             "default": []
           },
-          "shader-validator.defines": {
+          "shader-validator-gs.clientSideIncludes": {
+            "description": "Resolve #include directives client-side before sending documents to the language server. Diagnostics are automatically remapped to the correct source files.",
+            "type": "boolean",
+            "default": false
+          },
+          "shader-validator-gs.defines": {
             "description": "Preprocessor variables and values.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.vertex": {
+          "shader-validator-gs.stageDefine.vertex": {
             "description": "Preprocessor variables for vertex shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.fragment": {
+          "shader-validator-gs.stageDefine.fragment": {
             "description": "Preprocessor variables for fragment shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.compute": {
+          "shader-validator-gs.stageDefine.compute": {
             "description": "Preprocessor variables for compute shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.geometry": {
+          "shader-validator-gs.stageDefine.geometry": {
             "description": "Preprocessor variables for geometry shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.tesselationControl": {
+          "shader-validator-gs.stageDefine.tesselationControl": {
             "description": "Preprocessor variables for tesselation control shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.tesselationEvaluation": {
+          "shader-validator-gs.stageDefine.tesselationEvaluation": {
             "description": "Preprocessor variables for tesselation evaluation shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.mesh": {
+          "shader-validator-gs.stageDefine.mesh": {
             "description": "Preprocessor variables for mesh shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.task": {
+          "shader-validator-gs.stageDefine.task": {
             "description": "Preprocessor variables for task shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.rayGeneration": {
+          "shader-validator-gs.stageDefine.rayGeneration": {
             "description": "Preprocessor variables for ray generation shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.closestHit": {
+          "shader-validator-gs.stageDefine.closestHit": {
             "description": "Preprocessor variables for closest hit shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.anyHit": {
+          "shader-validator-gs.stageDefine.anyHit": {
             "description": "Preprocessor variables for any hit shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.callable": {
+          "shader-validator-gs.stageDefine.callable": {
             "description": "Preprocessor variables for callable shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.miss": {
+          "shader-validator-gs.stageDefine.miss": {
             "description": "Preprocessor variables for miss shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.stageDefine.intersect": {
+          "shader-validator-gs.stageDefine.intersect": {
             "description": "Preprocessor variables for intersect shader stage.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.pathRemapping": {
+          "shader-validator-gs.pathRemapping": {
             "description": "Remap virtual path starting with / to an absolute path.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
-          "shader-validator.serverPath": {
+          "shader-validator-gs.serverPath": {
             "description": "Use an external server instead of the bundled ones.",
             "type": "string",
             "default": ""
           },
-          "shader-validator.configOverride": {
+          "shader-validator-gs.configOverride": {
             "description": "Override configuration with a path to a specific configuration file.",
             "type": "string",
             "default": ""
           },
-          "shader-validator.useWasiServer": {
+          "shader-validator-gs.useWasiServer": {
             "description": "Use the wasi server instead of the native server. Only working for platform where DXC is available.",
             "type": "boolean",
             "default": false
@@ -287,12 +293,12 @@
       {
         "title": "Hlsl",
         "properties": {
-          "shader-validator.hlsl.enabled": {
+          "shader-validator-gs.hlsl.enabled": {
             "description": "Enable HLSL support for language server.",
             "type": "boolean",
             "default": true
           },
-          "shader-validator.hlsl.shaderModel": {
+          "shader-validator-gs.hlsl.shaderModel": {
             "type": "string",
             "description": "Shader model targeted for DXC HLSL (DXC only support up to sm 6.0).",
             "default": "ShaderModel6_8",
@@ -319,7 +325,7 @@
               "sm 6.8"
             ]
           },
-          "shader-validator.hlsl.version": {
+          "shader-validator-gs.hlsl.version": {
             "type": "string",
             "description": "HLSL version for DXC.",
             "default": "V2021",
@@ -336,12 +342,12 @@
               "2021"
             ]
           },
-          "shader-validator.hlsl.enable16bitTypes": {
+          "shader-validator-gs.hlsl.enable16bitTypes": {
             "type": "boolean",
             "description": "Enable 16 bits types. Only supported with sm >= 6.2 & HLSL version >= 2018.",
             "default": false
           },
-          "shader-validator.hlsl.spirv": {
+          "shader-validator-gs.hlsl.spirv": {
             "type": "boolean",
             "description": "Allow spirv syntax in shader code.",
             "default": false
@@ -351,12 +357,12 @@
       {
         "title": "Glsl",
         "properties": {
-          "shader-validator.glsl.enabled": {
+          "shader-validator-gs.glsl.enabled": {
             "description": "Enable GLSL support for language server.",
             "type": "boolean",
             "default": true
           },
-          "shader-validator.glsl.targetClient": {
+          "shader-validator-gs.glsl.targetClient": {
             "type": "string",
             "description": "Shader client for GLSL.",
             "default": "Vulkan1_3",
@@ -375,12 +381,12 @@
               "OpenGL"
             ]
           },
-          "shader-validator.glsl.preamble": {
+          "shader-validator-gs.glsl.preamble": {
             "type": "string",
             "description": "Specify a path to a file containing a preamble for all GLSL files.",
             "default": ""
           },
-          "shader-validator.glsl.spirvVersion": {
+          "shader-validator-gs.glsl.spirvVersion": {
             "type": "string",
             "description": "SPIRV version targeted for GLSL.",
             "default": "SPIRV1_6",
@@ -408,7 +414,7 @@
       {
         "title": "Wgsl",
         "properties": {
-          "shader-validator.wgsl.enabled": {
+          "shader-validator-gs.wgsl.enabled": {
             "description": "Enable WGSL support for language server.",
             "type": "boolean",
             "default": true
@@ -418,7 +424,7 @@
       {
         "title": "Debug",
         "properties": {
-          "shader-validator.trace.server": {
+          "shader-validator-gs.trace.server": {
             "type": "string",
             "scope": "window",
             "enum": [
@@ -439,83 +445,83 @@
     ],
     "commands": [
       {
-        "command": "shader-validator.showLogs",
+        "command": "shader-validator-gs.showLogs",
         "title": "Show logs",
         "category": "Shader validator",
         "icon": "$(terminal)"
       },
       {
-        "command": "shader-validator.startServer",
+        "command": "shader-validator-gs.startServer",
         "title": "Start server",
         "category": "Shader validator",
         "icon": "$(debug-start)"
       },
       {
-        "command": "shader-validator.stopServer",
+        "command": "shader-validator-gs.stopServer",
         "title": "Stop server",
         "category": "Shader validator",
         "icon": "$(debug-stop)"
       },
       {
-        "command": "shader-validator.restartServer",
+        "command": "shader-validator-gs.restartServer",
         "title": "Restart server",
         "category": "Shader validator",
         "icon": "$(debug-restart)"
       },
       {
-        "command": "shader-validator.validateFile",
+        "command": "shader-validator-gs.validateFile",
         "title": "Validate file",
         "category": "Shader validator",
         "icon": "$(check)"
       },
       {
-        "command": "shader-validator.dumpAst",
+        "command": "shader-validator-gs.dumpAst",
         "title": "Dump ast for debug",
         "category": "Shader validator",
         "icon": "$(list-tree)"
       },
       {
-        "command": "shader-validator.dumpDependency",
+        "command": "shader-validator-gs.dumpDependency",
         "title": "Dump dependency tree for debug",
         "category": "Shader validator",
         "icon": "$(list-tree)"
       },
       {
-        "command": "shader-validator.addCurrentFile",
+        "command": "shader-validator-gs.addCurrentFile",
         "title": "Add current file",
         "category": "Shader validator",
         "icon": "$(add)",
         "enablement": "view == shader-validator-variants"
       },
       {
-        "command": "shader-validator.addCurrentFileVariant",
+        "command": "shader-validator-gs.addCurrentFileVariant",
         "title": "Add a shader variant for current file",
         "category": "Shader validator",
         "icon": "$(add)"
       },
       {
-        "command": "shader-validator.editMenu",
+        "command": "shader-validator-gs.editMenu",
         "title": "Edit",
         "category": "Shader validator",
         "icon": "$(edit)",
         "enablement": "view == shader-validator-variants"
       },
       {
-        "command": "shader-validator.addMenu",
+        "command": "shader-validator-gs.addMenu",
         "title": "Add",
         "category": "Shader validator",
         "icon": "$(add)",
         "enablement": "view == shader-validator-variants"
       },
       {
-        "command": "shader-validator.deleteMenu",
+        "command": "shader-validator-gs.deleteMenu",
         "title": "Delete",
         "category": "Shader validator",
         "icon": "$(trash)",
         "enablement": "view == shader-validator-variants"
       },
       {
-        "command": "shader-validator.gotoShaderEntryPoint",
+        "command": "shader-validator-gs.gotoShaderEntryPoint",
         "title": "Go to shader entry point",
         "category": "Shader validator",
         "icon": "$(arrow-right)"
@@ -524,30 +530,30 @@
     "menus": {
       "commandPalette": [
         {
-          "command": "shader-validator.gotoShaderEntryPoint",
+          "command": "shader-validator-gs.gotoShaderEntryPoint",
           "when": "false"
         }
       ],
       "view/title": [
         {
-          "command": "shader-validator.addCurrentFile",
+          "command": "shader-validator-gs.addCurrentFile",
           "when": "view == shader-validator-variants && editorIsOpen",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
-          "command": "shader-validator.addMenu",
+          "command": "shader-validator-gs.addMenu",
           "group": "inline@1",
           "when": "view == shader-validator-variants && (viewItem == file || viewItem == includeList || viewItem == defineList)"
         },
         {
-          "command": "shader-validator.editMenu",
+          "command": "shader-validator-gs.editMenu",
           "group": "inline@2",
           "when": "view == shader-validator-variants && (viewItem == variant || viewItem == include || viewItem == define || viewItem == stage)"
         },
         {
-          "command": "shader-validator.deleteMenu",
+          "command": "shader-validator-gs.deleteMenu",
           "group": "inline@3",
           "when": "view == shader-validator-variants && (viewItem == variant || viewItem == include || viewItem == define || viewItem == file)"
         }
@@ -574,7 +580,7 @@
     "viewsWelcome": [
       {
         "view": "shader-validator-variants",
-        "contents": "In order to setup a shader variant, you can add a currently opened shader file & configure it from here.\n[Add Current File](command:shader-validator.addCurrentFile)\nShader variant allow you to define a context and an entry point for shader for a better validation & symbol providing experience.",
+        "contents": "In order to setup a shader variant, you can add a currently opened shader file & configure it from here.\n[Add Current File](command:shader-validator-gs.addCurrentFile)\nShader variant allow you to define a context and an entry point for shader for a better validation & symbol providing experience.",
         "when": "workbenchState != empty && editorIsOpen"
       },
       {

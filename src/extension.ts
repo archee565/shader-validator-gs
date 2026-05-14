@@ -58,6 +58,14 @@ export async function activate(context: vscode.ExtensionContext)
     sidebar = new ShaderVariantTreeDataProvider(context, server);
     context.subscriptions.push(sidebar);
 
+    // File watcher for include cache invalidation
+    const includeWatcher = vscode.workspace.createFileSystemWatcher(
+        '**/*.{hlsl,hlsli,glsl,vert,frag,comp,compp,geom,tesc,tese,mesh,task,wgsl,fx,fxh,ush,usf,h}',
+    );
+    context.subscriptions.push(includeWatcher);
+    includeWatcher.onDidChange((uri) => server.invalidateIncludeCache(uri));
+    includeWatcher.onDidDelete((uri) => server.invalidateIncludeCache(uri));
+
     // Create status bar
     let statusBar = new ShaderStatusBar(context, server);
     context.subscriptions.push(statusBar);
@@ -86,7 +94,7 @@ export async function activate(context: vscode.ExtensionContext)
         if (level === Trace.Off) {
             vscode.window.showWarningMessage("Server logs are disabled. Do you want to enable them ? Server will restart.", "Yes", "No").then((value) => {
                 if (value === "Yes") {
-                    vscode.workspace.getConfiguration("shader-validator").update("trace.server", "messages", true);
+                    vscode.workspace.getConfiguration("shader-validator-gs").update("trace.server", "messages", true);
                 }
             });
         } else {
@@ -143,7 +151,7 @@ export async function activate(context: vscode.ExtensionContext)
     }));
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(async (event : vscode.ConfigurationChangeEvent) => {
-            if (event.affectsConfiguration("shader-validator")) {
+            if (event.affectsConfiguration("shader-validator-gs")) {
                 let configurationRequiringAServerRestart = [
                     "shader-validator.trace.server",
                     "shader-validator.serverPath",
@@ -151,6 +159,7 @@ export async function activate(context: vscode.ExtensionContext)
                     "shader-validator.glsl.enabled",
                     "shader-validator.wgsl.enabled",
                     "shader-validator.useWasiServer",
+                    "shader-validator-gs.clientSideIncludes",
                 ];
                 let requiresRestart = false;
                 for (let configuration of configurationRequiringAServerRestart) {

@@ -2,6 +2,27 @@ import * as vscode from 'vscode';
 import { CancellationToken, DocumentSymbol, DocumentSymbolRequest, DocumentUri, LanguageClient, ProtocolNotificationType, ProtocolRequestType, Range, SymbolInformation, SymbolKind, TextDocumentIdentifier, TextDocumentItem, TextDocumentRegistrationOptions } from 'vscode-languageclient/node';
 import { resolveVSCodeVariables, ShaderLanguageClient } from '../client';
 
+const glslExtensionToStage: Record<string, string> = {
+    '.vert': 'vertex',
+    '.frag': 'fragment',
+    '.comp': 'compute',
+    '.compp': 'compute',
+    '.geom': 'geometry',
+    '.tesc': 'tesselationControl',
+    '.tese': 'tesselationEvaluation',
+    '.mesh': 'mesh',
+    '.task': 'task',
+};
+
+const stageToGlDefine: Record<string, string> = {
+    'vertex': 'GL_VERTEX_SHADER',
+    'fragment': 'GL_FRAGMENT_SHADER',
+    'compute': 'GL_COMPUTE_SHADER',
+    'geometry': 'GL_GEOMETRY_SHADER',
+    'tesselationControl': 'GL_TESS_CONTROL_SHADER',
+    'tesselationEvaluation': 'GL_TESS_EVALUATION_SHADER',
+};
+
 interface ShaderVariantSerialized {
     url: DocumentUri,
     shadingLanguage: string,
@@ -300,6 +321,11 @@ export class ShaderVariantTreeDataProvider implements vscode.TreeDataProvider<Sh
                 this.asyncGoToShaderEntryPoint;
             }
         }));
+        context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(() => {
+            if (!this.getActiveVariant()) {
+                this.notifyAutoDetectedVariant();
+            }
+        }));
         this.onServerStart();
     }
     onServerStart() {
@@ -431,18 +457,45 @@ export class ShaderVariantTreeDataProvider implements vscode.TreeDataProvider<Sh
                 this.server.sendNotification(didChangeShaderVariantNotification, {
                     // Need this check again here because its async
                     shaderVariant: fileActiveVariant ? shaderVariantToSerialized(
-                        this.server.uriAsString(fileActiveVariant.uri), 
+                        this.server.uriAsString(fileActiveVariant.uri),
                         capitalizeFirstLetter(doc.languageId), // Server expect it with capitalized first letter.
                         fileActiveVariant
                     ) : null,
                 });
             });
         } else {
-            this.server.sendNotification(didChangeShaderVariantNotification, {
-                shaderVariant: null,
-            });
+            this.notifyAutoDetectedVariant();
         }
-        
+
+    }
+    private notifyAutoDetectedVariant() {
+        let activeEditor = vscode.window.activeTextEditor;
+        if (!activeEditor || activeEditor.document.uri.scheme !== 'file' || activeEditor.document.languageId !== 'glsl') {
+            this.server.sendNotification(didChangeShaderVariantNotification, { shaderVariant: null });
+            return;
+        }
+        let filePath = activeEditor.document.uri.fsPath;
+        let ext = filePath.substring(filePath.lastIndexOf('.'));
+        let stageName = glslExtensionToStage[ext];
+        if (!stageName) {
+            this.server.sendNotification(didChangeShaderVariantNotification, { shaderVariant: null });
+            return;
+        }
+        // Check for user-configured stageDefine, otherwise use the standard GL_* macro.
+        let stageDefineConfig = vscode.workspace.getConfiguration("shader-validator-gs").get<Record<string, string>>(`stageDefine.${stageName}`);
+        let defines = (stageDefineConfig && Object.keys(stageDefineConfig).length > 0)
+            ? stageDefineConfig
+            : { [stageToGlDefine[stageName]]: '1' };
+        this.server.sendNotification(didChangeShaderVariantNotification, {
+            shaderVariant: {
+                url: this.server.uriAsString(activeEditor.document.uri),
+                shadingLanguage: "Glsl",
+                entryPoint: "",
+                stage: stageName,
+                defines: defines,
+                includes: [],
+            },
+        });
     }
     private requestDocumentSymbol(uri: vscode.Uri) {
         // TODO: should request inlay hint aswell.
@@ -461,7 +514,7 @@ export class ShaderVariantTreeDataProvider implements vscode.TreeDataProvider<Sh
         // See https://github.com/microsoft/vscode/issues/108722 (Old one https://github.com/microsoft/vscode/issues/71454)
 
         // Only trigger it if requested by user as it may be a bit invasive.
-        let updateSymbolsOnVariantUpdate = vscode.workspace.getConfiguration("shader-validator").get<boolean>("updateSymbolsOnVariantUpdate");
+        let updateSymbolsOnVariantUpdate = vscode.workspace.getConfiguration("shader-validator-gs").get<boolean>("updateSymbolsOnVariantUpdate");
         if (updateSymbolsOnVariantUpdate) {
             let visibleEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.path === uri.path);
             if (visibleEditor) {
