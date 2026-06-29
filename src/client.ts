@@ -28,6 +28,7 @@ import {
     ProtocolNotificationType,
     ProvideDocumentSymbolsSignature,
     ProvideInlayHintsSignature,
+    ProvideDefinitionSignature,
     DocumentSemanticsTokensSignature,
     DocumentSemanticsTokensEditsSignature,
     DocumentRangeSemanticTokensSignature,
@@ -513,6 +514,25 @@ export class ShaderLanguageClient {
                 }
                 return kept;
             },
+            async provideDefinition(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken, next: ProvideDefinitionSignature) {
+                const uriKey = document.uri.toString();
+                const preprocessResult = self.preprocessResults.get(uriKey);
+                if (!preprocessResult) {
+                    return next(document, position, token);
+                }
+                const expandedRange = self.preprocessor.mapSourceRangeToExpanded(
+                    preprocessResult, uriKey, position.line, position.line,
+                );
+                if (!expandedRange) {
+                    return next(document, position, token);
+                }
+                const expandedPosition = new vscode.Position(expandedRange.start, position.character);
+                const result = await next(document, expandedPosition, token);
+                if (!result) {
+                    return result;
+                }
+                return self.remapDefinitionResult(result, preprocessResult, uriKey);
+            },
             async provideDocumentSemanticTokens(document: vscode.TextDocument, token: vscode.CancellationToken, next: DocumentSemanticsTokensSignature) {
                 const result = await next(document, token);
                 if (!result) {
@@ -890,6 +910,76 @@ export class ShaderLanguageClient {
             result.push(edit);
         }
         return result;
+    }
+
+    private remapExpandedRangeToSource(
+        range: vscode.Range,
+        preprocessResult: PreprocessResult,
+        mainUriKey: string,
+    ): { uri: vscode.Uri; range: vscode.Range } | undefined {
+        const startMapping = this.preprocessor.mapLineToSource(preprocessResult, range.start.line);
+        if (!startMapping) {
+            return undefined;
+        }
+        const startUri = vscode.Uri.parse(startMapping.sourceUri);
+        const endMapping = this.preprocessor.mapLineToSource(preprocessResult, range.end.line);
+        let endLine: number;
+        let endChar: number;
+        if (endMapping && endMapping.sourceUri === startMapping.sourceUri) {
+            endLine = endMapping.sourceLine;
+            endChar = range.end.character;
+        } else {
+            endLine = startMapping.sourceLine;
+            endChar = 999;
+        }
+        return {
+            uri: startUri,
+            range: new vscode.Range(startMapping.sourceLine, range.start.character, endLine, endChar),
+        };
+    }
+
+    private remapDefinitionResult(
+        result: vscode.Definition | vscode.LocationLink[],
+        preprocessResult: PreprocessResult,
+        mainUriKey: string,
+    ): vscode.Definition | vscode.LocationLink[] {
+        if (result instanceof vscode.Location) {
+            const remapped = this.remapExpandedRangeToSource(result.range, preprocessResult, mainUriKey);
+            return remapped ? new vscode.Location(remapped.uri, remapped.range) : result;
+        }
+        if (!Array.isArray(result) || result.length === 0) {
+            return result;
+        }
+        if ('targetUri' in result[0]) {
+            const links: vscode.LocationLink[] = [];
+            for (const link of result as vscode.LocationLink[]) {
+                const target = this.remapExpandedRangeToSource(link.targetRange, preprocessResult, mainUriKey);
+                if (!target) {
+                    continue;
+                }
+                const targetSelection = link.targetSelectionRange
+                    ? this.remapExpandedRangeToSource(link.targetSelectionRange, preprocessResult, mainUriKey)
+                    : target;
+                const origin = link.originSelectionRange
+                    ? this.remapExpandedRangeToSource(link.originSelectionRange, preprocessResult, mainUriKey)
+                    : undefined;
+                links.push({
+                    targetUri: target.uri,
+                    targetRange: target.range,
+                    targetSelectionRange: targetSelection ? targetSelection.range : target.range,
+                    originSelectionRange: origin ? origin.range : undefined,
+                });
+            }
+            return links;
+        }
+        const locations: vscode.Location[] = [];
+        for (const loc of result as vscode.Location[]) {
+            const remapped = this.remapExpandedRangeToSource(loc.range, preprocessResult, mainUriKey);
+            if (remapped) {
+                locations.push(new vscode.Location(remapped.uri, remapped.range));
+            }
+        }
+        return locations;
     }
 
     private remapSemanticTokensData(
