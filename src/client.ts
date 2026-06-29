@@ -28,6 +28,9 @@ import {
     ProtocolNotificationType,
     ProvideDocumentSymbolsSignature,
     ProvideInlayHintsSignature,
+    DocumentSemanticsTokensSignature,
+    DocumentSemanticsTokensEditsSignature,
+    DocumentRangeSemanticTokensSignature,
     RequestType,
     ServerOptions,
     Trace,
@@ -510,6 +513,58 @@ export class ShaderLanguageClient {
                 }
                 return kept;
             },
+            async provideDocumentSemanticTokens(document: vscode.TextDocument, token: vscode.CancellationToken, next: DocumentSemanticsTokensSignature) {
+                const result = await next(document, token);
+                if (!result) {
+                    return result;
+                }
+                const uriKey = document.uri.toString();
+                const preprocessResult = self.preprocessResults.get(uriKey);
+                if (!preprocessResult) {
+                    return result;
+                }
+                const remapped = self.remapSemanticTokensData(result.data, preprocessResult, uriKey);
+                return new vscode.SemanticTokens(remapped);
+            },
+            async provideDocumentRangeSemanticTokens(document: vscode.TextDocument, range: vscode.Range, token: vscode.CancellationToken, next: DocumentRangeSemanticTokensSignature) {
+                const uriKey = document.uri.toString();
+                const preprocessResult = self.preprocessResults.get(uriKey);
+                if (!preprocessResult) {
+                    return next(document, range, token);
+                }
+                const expandedRange = self.preprocessor.mapSourceRangeToExpanded(
+                    preprocessResult, uriKey, range.start.line, range.end.line,
+                );
+                if (!expandedRange) {
+                    return new vscode.SemanticTokens(new Uint32Array(0));
+                }
+                const remappedRange = new vscode.Range(
+                    expandedRange.start, range.start.character,
+                    expandedRange.end, range.end.character,
+                );
+                const result = await next(document, remappedRange, token);
+                if (!result) {
+                    return result;
+                }
+                const remapped = self.remapSemanticTokensData(result.data, preprocessResult, uriKey);
+                return new vscode.SemanticTokens(remapped);
+            },
+            async provideDocumentSemanticTokensEdits(document: vscode.TextDocument, previousResultId: string, token: vscode.CancellationToken, next: DocumentSemanticsTokensEditsSignature) {
+                const result = await next(document, previousResultId, token);
+                if (!result) {
+                    return result;
+                }
+                const uriKey = document.uri.toString();
+                const preprocessResult = self.preprocessResults.get(uriKey);
+                if (!preprocessResult) {
+                    return result;
+                }
+                if (result instanceof vscode.SemanticTokens) {
+                    const remapped = self.remapSemanticTokensData(result.data, preprocessResult, uriKey);
+                    return new vscode.SemanticTokens(remapped);
+                }
+                return undefined;
+            },
         };
         const clientOptions: LanguageClientOptions = {
             // Register the server for shader documents
@@ -835,6 +890,30 @@ export class ShaderLanguageClient {
             result.push(edit);
         }
         return result;
+    }
+
+    private remapSemanticTokensData(
+        data: Uint32Array,
+        preprocessResult: PreprocessResult,
+        mainUriKey: string,
+    ): Uint32Array {
+        const out: number[] = [];
+        let prevSourceLine = 0;
+        let first = true;
+        let absExpandedLine = 0;
+        for (let i = 0; i < data.length; i += 5) {
+            absExpandedLine += data[i];
+            const mapping = this.preprocessor.mapLineToSource(preprocessResult, absExpandedLine);
+            if (!mapping || mapping.sourceUri !== mainUriKey) {
+                continue;
+            }
+            const sourceLine = mapping.sourceLine;
+            const newDeltaLine = first ? sourceLine : sourceLine - prevSourceLine;
+            out.push(newDeltaLine, data[i + 1], data[i + 2], data[i + 3], data[i + 4]);
+            prevSourceLine = sourceLine;
+            first = false;
+        }
+        return Uint32Array.from(out);
     }
 
 }
