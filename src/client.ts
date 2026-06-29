@@ -27,6 +27,7 @@ import {
     Middleware,
     ProtocolNotificationType,
     ProvideDocumentSymbolsSignature,
+    ProvideInlayHintsSignature,
     RequestType,
     ServerOptions,
     Trace,
@@ -474,6 +475,41 @@ export class ShaderLanguageClient {
                     next(vscode.Uri.parse(targetUri), targetDiags);
                 }
             },
+            async provideInlayHints(document: vscode.TextDocument, viewPort: vscode.Range, token: vscode.CancellationToken, next: ProvideInlayHintsSignature) {
+                const uriKey = document.uri.toString();
+                const preprocessResult = self.preprocessResults.get(uriKey);
+                if (!preprocessResult) {
+                    return next(document, viewPort, token);
+                }
+                const expandedRange = self.preprocessor.mapSourceRangeToExpanded(
+                    preprocessResult, uriKey, viewPort.start.line, viewPort.end.line,
+                );
+                if (!expandedRange) {
+                    return [];
+                }
+                const remappedViewPort = new vscode.Range(
+                    expandedRange.start, viewPort.start.character,
+                    expandedRange.end, viewPort.end.character,
+                );
+                const hints = await next(document, remappedViewPort, token);
+                if (!hints) {
+                    return hints;
+                }
+                const kept: vscode.InlayHint[] = [];
+                for (const hint of hints) {
+                    const mapping = self.preprocessor.mapLineToSource(preprocessResult, hint.position.line);
+                    if (!mapping || mapping.sourceUri !== uriKey) {
+                        continue;
+                    }
+                    hint.position = new vscode.Position(mapping.sourceLine, hint.position.character);
+                    if (hint.textEdits) {
+                        const remappedEdits = self.remapInlayHintEdits(hint.textEdits, preprocessResult, uriKey);
+                        hint.textEdits = remappedEdits.length > 0 ? remappedEdits : undefined;
+                    }
+                    kept.push(hint);
+                }
+                return kept;
+            },
         };
         const clientOptions: LanguageClientOptions = {
             // Register the server for shader documents
@@ -775,6 +811,30 @@ export class ShaderLanguageClient {
         };
         remapped.message = diag.message + ' (diagnostic continues into included file)';
         return [[startUri, remapped]];
+    }
+
+    private remapInlayHintEdits(
+        edits: vscode.TextEdit[],
+        preprocessResult: PreprocessResult,
+        mainUriKey: string,
+    ): vscode.TextEdit[] {
+        const result: vscode.TextEdit[] = [];
+        for (const edit of edits) {
+            const startMapping = this.preprocessor.mapLineToSource(preprocessResult, edit.range.start.line);
+            const endMapping = this.preprocessor.mapLineToSource(preprocessResult, edit.range.end.line);
+            if (!startMapping || !endMapping) {
+                continue;
+            }
+            if (startMapping.sourceUri !== mainUriKey || endMapping.sourceUri !== mainUriKey) {
+                continue;
+            }
+            edit.range = new vscode.Range(
+                startMapping.sourceLine, edit.range.start.character,
+                endMapping.sourceLine, edit.range.end.character,
+            );
+            result.push(edit);
+        }
+        return result;
     }
 
 }

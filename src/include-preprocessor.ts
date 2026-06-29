@@ -135,6 +135,29 @@ export class ShaderPreprocessor {
         return result.lineMap[preprocessedLine];
     }
 
+    mapSourceRangeToExpanded(
+        result: PreprocessResult,
+        sourceUri: string,
+        startLine: number,
+        endLine: number,
+    ): { start: number; end: number } | undefined {
+        let expStart: number | undefined;
+        let expEnd: number | undefined;
+        for (let i = 0; i < result.lineMap.length; i++) {
+            const m = result.lineMap[i];
+            if (m.sourceUri === sourceUri && m.sourceLine >= startLine && m.sourceLine <= endLine) {
+                if (expStart === undefined) {
+                    expStart = i;
+                }
+                expEnd = i;
+            }
+        }
+        if (expStart === undefined || expEnd === undefined) {
+            return undefined;
+        }
+        return { start: expStart, end: expEnd };
+    }
+
     private async preprocessInternal(
         uri: vscode.Uri,
         content: string,
