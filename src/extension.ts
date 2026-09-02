@@ -159,7 +159,6 @@ export async function activate(context: vscode.ExtensionContext)
                     "shader-validator.glsl.enabled",
                     "shader-validator.wgsl.enabled",
                     "shader-validator.useWasiServer",
-                    "shader-validator-gs.clientSideIncludes",
                 ];
                 let requiresRestart = false;
                 for (let configuration of configurationRequiringAServerRestart) {

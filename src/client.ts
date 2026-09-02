@@ -60,12 +60,12 @@ export function isRunningOnWeb() : boolean {
 function getConfigurationAsString(): string {
     let config = vscode.workspace.getConfiguration("shader-validator-gs");
     const configObject : { [key: string]: any } = {};
-    const clientSideIncludes = config.get<boolean>("clientSideIncludes");
     for (const [key, value] of Object.entries(config)) {
-        // When client-side include processing is active, don't send include
-        // paths to the server — the server's own include resolution would
-        // insert #line directives that cause GL_GOOGLE errors.
-        if (clientSideIncludes && key === "includes") {
+        // Includes are resolved client-side and documents are sent to the
+        // server fully expanded, so the server must not resolve includes
+        // itself: its resolution would insert #line directives that cause
+        // GL_GOOGLE errors.
+        if (key === "includes") {
             continue;
         }
         configObject[key] = value;
@@ -438,9 +438,8 @@ export class ShaderLanguageClient {
                 }
             },
             async didOpen(document: vscode.TextDocument, next) {
-                const setting = vscode.workspace.getConfiguration("shader-validator-gs").get<boolean>("clientSideIncludes");
                 const enabled = self.shouldPreprocess(document);
-                try { fs.appendFileSync('/tmp/shader-validator-debug.txt', `didOpen: ${document.uri} lang=${document.languageId} scheme=${document.uri.scheme} setting=${setting} preprocess=${enabled}\n`); } catch {}
+                try { fs.appendFileSync('/tmp/shader-validator-debug.txt', `didOpen: ${document.uri} lang=${document.languageId} scheme=${document.uri.scheme} preprocess=${enabled}\n`); } catch {}
                 if (enabled) {
                     await self.sendPreprocessedOpen(document);
                     return;
@@ -790,9 +789,9 @@ export class ShaderLanguageClient {
     }
 
     private shouldPreprocess(document: vscode.TextDocument): boolean {
-        return vscode.workspace.getConfiguration("shader-validator-gs")
-            .get<boolean>("clientSideIncludes") === true
-            && ShaderLanguageClient.isEnabledLangId(document.languageId)
+        // Includes are always resolved client-side: the server only ever
+        // receives documents with includes fully expanded.
+        return ShaderLanguageClient.isEnabledLangId(document.languageId)
             && document.uri.scheme === 'file';
     }
 
