@@ -11,11 +11,27 @@ export interface IncludeError {
     message: string;
 }
 
+export interface IncludeDirective {
+    /** Source line of the include directive. */
+    line: number;
+    /** Start of the include path token, including its quote or angle bracket. */
+    startCharacter: number;
+    /** End of the include path token, including its quote or angle bracket. */
+    endCharacter: number;
+    /** Path as written in the source. */
+    path: string;
+    /** Trimmed source line, used for the outline detail. */
+    detail: string;
+    /** Resolved include file, or null when it could not be found. */
+    resolvedUri: vscode.Uri | null;
+}
+
 export interface PreprocessResult {
     content: string;
     lineMap: LineMapping[];
     errors: IncludeError[];
     includedFiles: Set<string>;
+    includeDirectives: IncludeDirective[];
 }
 
 // Matches #include "path" or #include <path> (with optional whitespace)
@@ -135,6 +151,20 @@ export class ShaderPreprocessor {
         return result.lineMap[preprocessedLine];
     }
 
+    mapSourceLineToExpanded(
+        result: PreprocessResult,
+        sourceUri: string,
+        sourceLine: number,
+    ): number | undefined {
+        for (let i = 0; i < result.lineMap.length; i++) {
+            const mapping = result.lineMap[i];
+            if (mapping.sourceUri === sourceUri && mapping.sourceLine === sourceLine) {
+                return i;
+            }
+        }
+        return undefined;
+    }
+
     mapSourceRangeToExpanded(
         result: PreprocessResult,
         sourceUri: string,
@@ -166,6 +196,7 @@ export class ShaderPreprocessor {
     ): Promise<PreprocessResult> {
         const errors: IncludeError[] = [];
         const includedFiles = new Set<string>();
+        const includeDirectives: IncludeDirective[] = [];
         const lines = content.split('\n');
         const outputLines: string[] = [];
 
@@ -176,7 +207,21 @@ export class ShaderPreprocessor {
             if (match) {
                 // Capture group 1 = "path", group 2 = <path>
                 const includePath = match[1] ?? match[2];
+                const pathOffset = Math.max(0, match[0].indexOf(includePath));
+                // Include the quotes / angle brackets in the selectable range,
+                // matching what the stock server reports.
+                const tokenOffset = Math.max(0, pathOffset - 1);
+                const includeDirective: IncludeDirective = {
+                    line: i,
+                    startCharacter: (match.index ?? 0) + tokenOffset,
+                    endCharacter: (match.index ?? 0) + tokenOffset + includePath.length + 2,
+                    path: includePath,
+                    detail: line.trim(),
+                    resolvedUri: null,
+                };
                 const includeUri = await this.resolver.resolveInclude(includePath, uri);
+                includeDirective.resolvedUri = includeUri;
+                includeDirectives.push(includeDirective);
 
                 if (includeUri === null) {
                     // Include not found — replace with empty line to prevent
@@ -237,6 +282,7 @@ export class ShaderPreprocessor {
             lineMap,
             errors,
             includedFiles,
+            includeDirectives,
         };
     }
 }

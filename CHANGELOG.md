@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [unreleased]
 
+### Fixed
+
+- Outline and other document symbol consumers now receive source line numbers when shader includes are expanded client-side.
+- Go to definition now maps definitions in included files to the correct file and line, and resolves include directives to the included file.
+
 ## [1.3.2] - 2026-04-12
 
 ### Added

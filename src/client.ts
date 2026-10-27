@@ -412,12 +412,20 @@ export class ShaderLanguageClient {
         const middleware: Middleware = {
             async provideDocumentSymbols(document: vscode.TextDocument, token: vscode.CancellationToken, next: ProvideDocumentSymbolsSignature) {
                 const result = await next(document, token);
-                if (result) {
+                if (!result) {
+                    return result;
+                }
+                const uriKey = document.uri.toString();
+                const preprocessResult = self.preprocessResults.get(uriKey);
+                if (!preprocessResult) {
                     // /!\ Type casting need to match server data sent. /!\
                     let resultArray = result as vscode.DocumentSymbol[];
                     sidebar.onDocumentSymbols(document.uri, resultArray);
+                    return result;
                 }
-                return result;
+                const remapped = self.remapDocumentSymbols(result as (vscode.DocumentSymbol | vscode.SymbolInformation)[], preprocessResult, uriKey);
+                sidebar.onDocumentSymbols(document.uri, remapped);
+                return remapped;
             },
             workspace: {
                 async configuration(params: ConfigurationParams, token: vscode.CancellationToken, next : ConfigurationRequest.HandlerSignature) {
@@ -519,13 +527,37 @@ export class ShaderLanguageClient {
                 if (!preprocessResult) {
                     return next(document, position, token);
                 }
-                const expandedRange = self.preprocessor.mapSourceRangeToExpanded(
-                    preprocessResult, uriKey, position.line, position.line,
+
+                // Include directives are not part of the expanded document, so
+                // resolve them directly to the included file instead of asking
+                // the server (which only knows the expanded line numbers).
+                const includeDirective = preprocessResult.includeDirectives.find(directive =>
+                    directive.line === position.line
+                    && position.character >= directive.startCharacter
+                    && position.character <= directive.endCharacter,
                 );
-                if (!expandedRange) {
-                    return next(document, position, token);
+                if (includeDirective) {
+                    if (!includeDirective.resolvedUri) {
+                        return undefined;
+                    }
+                    const originSelectionRange = new vscode.Range(
+                        includeDirective.line, includeDirective.startCharacter,
+                        includeDirective.line, includeDirective.endCharacter,
+                    );
+                    const targetRange = new vscode.Range(0, 0, 0, 0);
+                    return [{
+                        originSelectionRange,
+                        targetUri: includeDirective.resolvedUri,
+                        targetRange,
+                        targetSelectionRange: targetRange,
+                    }];
                 }
-                const expandedPosition = new vscode.Position(expandedRange.start, position.character);
+
+                const expandedLine = self.preprocessor.mapSourceLineToExpanded(preprocessResult, uriKey, position.line);
+                if (expandedLine === undefined) {
+                    return undefined;
+                }
+                const expandedPosition = new vscode.Position(expandedLine, position.character);
                 const result = await next(document, expandedPosition, token);
                 if (!result) {
                     return result;
@@ -911,10 +943,98 @@ export class ShaderLanguageClient {
         return result;
     }
 
+    private remapDocumentSymbols(
+        symbols: (vscode.DocumentSymbol | vscode.SymbolInformation)[],
+        preprocessResult: PreprocessResult,
+        mainUriKey: string,
+    ): vscode.DocumentSymbol[] {
+        const remapped: vscode.DocumentSymbol[] = [];
+
+        const remapRange = (range: vscode.Range): vscode.Range | undefined => {
+            const mapping = this.remapExpandedRangeToSource(range, preprocessResult);
+            if (!mapping || mapping.uri.toString() !== mainUriKey) {
+                return undefined;
+            }
+            return mapping.range;
+        };
+
+        if (symbols.length > 0 && 'location' in symbols[0]) {
+            // SymbolInformation[] from the server.
+            for (const symbol of symbols as vscode.SymbolInformation[]) {
+                if (symbol.location.uri.toString() !== mainUriKey) {
+                    continue;
+                }
+                const range = remapRange(symbol.location.range);
+                if (!range) {
+                    continue;
+                }
+                remapped.push(new vscode.DocumentSymbol(
+                    symbol.name,
+                    symbol.containerName ?? '',
+                    symbol.kind,
+                    range,
+                    range,
+                ));
+            }
+        } else {
+            // DocumentSymbol[] from the server. The server is given the
+            // expanded document, so all ranges must be mapped back and
+            // symbols belonging to included files must be dropped.
+            const remapSymbol = (symbol: vscode.DocumentSymbol): vscode.DocumentSymbol | undefined => {
+                const range = remapRange(symbol.range);
+                if (!range) {
+                    return undefined;
+                }
+                const selectionRange = remapRange(symbol.selectionRange) ?? range;
+                const documentSymbol = new vscode.DocumentSymbol(
+                    symbol.name,
+                    symbol.detail,
+                    symbol.kind,
+                    range,
+                    selectionRange,
+                );
+                if (symbol.tags) {
+                    documentSymbol.tags = symbol.tags;
+                }
+                if (symbol.children && symbol.children.length > 0) {
+                    documentSymbol.children = symbol.children
+                        .map(remapSymbol)
+                        .filter((child): child is vscode.DocumentSymbol => child !== undefined);
+                }
+                return documentSymbol;
+            };
+            for (const symbol of symbols as vscode.DocumentSymbol[]) {
+                const documentSymbol = remapSymbol(symbol);
+                if (documentSymbol) {
+                    remapped.push(documentSymbol);
+                }
+            }
+        }
+
+        // Include directives are consumed by the client-side preprocessor, so
+        // the expanded document seen by the server has no symbols for them.
+        // Add them back to the outline to match the stock server behavior.
+        for (const directive of preprocessResult.includeDirectives) {
+            const range = new vscode.Range(
+                directive.line, directive.startCharacter,
+                directive.line, directive.endCharacter,
+            );
+            remapped.push(new vscode.DocumentSymbol(
+                directive.path,
+                directive.detail,
+                vscode.SymbolKind.Module,
+                range,
+                range,
+            ));
+        }
+
+        remapped.sort((a, b) => a.range.start.line - b.range.start.line);
+        return remapped;
+    }
+
     private remapExpandedRangeToSource(
         range: vscode.Range,
         preprocessResult: PreprocessResult,
-        mainUriKey: string,
     ): { uri: vscode.Uri; range: vscode.Range } | undefined {
         const startMapping = this.preprocessor.mapLineToSource(preprocessResult, range.start.line);
         if (!startMapping) {
@@ -942,43 +1062,48 @@ export class ShaderLanguageClient {
         preprocessResult: PreprocessResult,
         mainUriKey: string,
     ): vscode.Definition | vscode.LocationLink[] {
-        if (result instanceof vscode.Location) {
-            const remapped = this.remapExpandedRangeToSource(result.range, preprocessResult, mainUriKey);
-            return remapped ? new vscode.Location(remapped.uri, remapped.range) : result;
-        }
-        if (!Array.isArray(result) || result.length === 0) {
-            return result;
-        }
-        if ('targetUri' in result[0]) {
-            const links: vscode.LocationLink[] = [];
-            for (const link of result as vscode.LocationLink[]) {
-                const target = this.remapExpandedRangeToSource(link.targetRange, preprocessResult, mainUriKey);
-                if (!target) {
-                    continue;
-                }
-                const targetSelection = link.targetSelectionRange
-                    ? this.remapExpandedRangeToSource(link.targetSelectionRange, preprocessResult, mainUriKey)
-                    : target;
-                const origin = link.originSelectionRange
-                    ? this.remapExpandedRangeToSource(link.originSelectionRange, preprocessResult, mainUriKey)
+        const remapItem = (item: vscode.Location | vscode.LocationLink): vscode.Location | vscode.LocationLink | undefined => {
+            const targetUri = 'targetUri' in item ? item.targetUri : item.uri;
+            // If the target is already a real file (for example when the
+            // server resolved it itself), its coordinates are source
+            // coordinates and must not be mapped again.
+            if (!targetUri || targetUri.toString() !== mainUriKey) {
+                return item;
+            }
+            const targetRange = 'targetUri' in item ? item.targetRange : item.range;
+            const target = this.remapExpandedRangeToSource(targetRange, preprocessResult);
+            if (!target) {
+                return undefined;
+            }
+            if ('targetUri' in item) {
+                const selection = item.targetSelectionRange
+                    ? this.remapExpandedRangeToSource(item.targetSelectionRange, preprocessResult)
                     : undefined;
-                links.push({
+                const origin = item.originSelectionRange
+                    ? this.remapExpandedRangeToSource(item.originSelectionRange, preprocessResult)
+                    : undefined;
+                return {
                     targetUri: target.uri,
                     targetRange: target.range,
-                    targetSelectionRange: targetSelection ? targetSelection.range : target.range,
+                    targetSelectionRange: selection ? selection.range : target.range,
                     originSelectionRange: origin ? origin.range : undefined,
-                });
+                };
             }
-            return links;
+            return new vscode.Location(target.uri, target.range);
+        };
+
+        if (!Array.isArray(result)) {
+            return remapItem(result as vscode.Location | vscode.LocationLink) as vscode.Definition;
         }
-        const locations: vscode.Location[] = [];
-        for (const loc of result as vscode.Location[]) {
-            const remapped = this.remapExpandedRangeToSource(loc.range, preprocessResult, mainUriKey);
+
+        const definitions: (vscode.Location | vscode.LocationLink)[] = [];
+        for (const item of result as (vscode.Location | vscode.LocationLink)[]) {
+            const remapped = remapItem(item);
             if (remapped) {
-                locations.push(new vscode.Location(remapped.uri, remapped.range));
+                definitions.push(remapped);
             }
         }
-        return locations;
+        return definitions as vscode.Definition | vscode.LocationLink[];
     }
 
     private remapSemanticTokensData(
